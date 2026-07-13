@@ -1,2 +1,0 @@
-[console_scripts]
-geofence-qnn = geofence_qnn.cli:main
