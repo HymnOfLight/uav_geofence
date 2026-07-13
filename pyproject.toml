@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uav-geofence-qnn"
+version = "0.1.0"
+description = "Reproducible INT8 QNN verification experiments for UAV geofencing"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "PyYAML>=6.0",
+  "z3-solver>=4.13",
+]
+
+[project.optional-dependencies]
+plots = ["matplotlib>=3.8", "pandas>=2.1"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+geofence-qnn = "geofence_qnn.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
