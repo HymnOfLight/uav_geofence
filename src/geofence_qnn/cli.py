@@ -11,7 +11,8 @@ import time
 import numpy as np
 
 from .config import load_config
-from .data import make_dataset
+from .data import make_dataset_from_config
+from .flightstack.teachers import make_teacher
 from .geometry import box_from_tuple
 from .io_utils import sha256, write_csv, write_json
 from .model import MLP, train_mlp
@@ -42,21 +43,14 @@ def setup(config_path: str, output: str):
     return cfg, out
 
 
+def teacher_from_config(cfg):
+    e = cfg.environment
+    return make_teacher(cfg.teacher.backend, cfg.teacher.params, vmax=e.vmax, amax=e.amax)
+
+
 def train_stage(cfg, out: Path):
     e, t = cfg.environment, cfg.training
-    geofence = box_from_tuple(e.forbidden_box)
-    states, x, y = make_dataset(
-        t.samples,
-        cfg.seed,
-        np.array(e.world_min),
-        np.array(e.world_max),
-        e.vmax,
-        e.amax,
-        np.array(e.goal),
-        geofence,
-        e.position_scale,
-        e.safety_margin,
-    )
+    states, x, y = make_dataset_from_config(cfg, teacher=teacher_from_config(cfg))
     split = int(0.8 * len(x))
     model = MLP.create([x.shape[1], *t.hidden, 2], cfg.seed)
     history = train_mlp(
@@ -84,6 +78,9 @@ def train_stage(cfg, out: Path):
             "samples": len(x),
             "train_samples": split,
             "test_samples": len(x) - split,
+            "data_source": cfg.data.source,
+            "data_logs": list(cfg.data.logs),
+            "teacher_backend": cfg.teacher.backend,
             "float_test_mse": test_mse,
             "int8_test_mse": q_mse,
             "float_model_sha256": sha256(model_path),
@@ -195,7 +192,7 @@ def mc_stage(cfg, out: Path, model: MLP, qnet: Int8MLP):
     init = np.array(v.initial_box, dtype=float)
     lo, hi = init[[0, 2, 4, 6]], init[[1, 3, 5, 7]]
     summary = run_monte_carlo(
-        ["teacher", "float", "int8", "int8_shield"],
+        list(s.controllers),
         s.episodes,
         lo,
         hi,
@@ -214,6 +211,7 @@ def mc_stage(cfg, out: Path, model: MLP, qnet: Int8MLP):
         cfg.seed + 400,
         model,
         qnet,
+        teacher=teacher_from_config(cfg),
     )
     write_csv(out / "monte_carlo_summary.csv", summary)
     write_json(out / "monte_carlo_summary.json", summary)
@@ -235,15 +233,40 @@ def run_all(config_path: str, output: str):
     print(json.dumps(summaries, ensure_ascii=False, indent=2))
 
 
+def sitl_record_stage(cfg, out: Path, args):
+    from .flightstack.sitl import record_sitl_trajectories
+
+    summary = record_sitl_trajectories(
+        args.url,
+        out / "sitl_trajectories.csv",
+        episodes=args.episodes,
+        duration_s=args.duration,
+        rate_hz=args.rate,
+        goal=tuple(cfg.environment.goal) if args.command_goal else None,
+        offset=cfg.data.offset,
+    )
+    write_json(out / "sitl_record_summary.json", summary)
+    return summary
+
+
 def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description="UAV geofence INT8 QNN experiments")
-    parser.add_argument("command", choices=["all", "train", "e0", "e1", "e2", "mc"])
+    parser.add_argument("command", choices=["all", "train", "e0", "e1", "e2", "mc", "sitl-record"])
     parser.add_argument("--config", default="configs/smoke.yaml")
     parser.add_argument("--output", default="runs/smoke")
+    sitl = parser.add_argument_group("sitl-record", "record flight data from a live PX4/ArduPilot SITL")
+    sitl.add_argument("--url", default="udp:127.0.0.1:14550", help="MAVLink connection URL")
+    sitl.add_argument("--episodes", type=int, default=1)
+    sitl.add_argument("--duration", type=float, default=60.0, help="seconds per episode")
+    sitl.add_argument("--rate", type=float, default=20.0, help="LOCAL_POSITION_NED stream rate (Hz)")
+    sitl.add_argument("--command-goal", action="store_true", help="stream position setpoints toward the configured goal")
     args = parser.parse_args(argv)
     if args.command == "all":
         return run_all(args.config, args.output)
     cfg, out = setup(args.config, args.output)
+    if args.command == "sitl-record":
+        print(sitl_record_stage(cfg, out, args))
+        return
     if args.command == "train":
         train_stage(cfg, out)
         return

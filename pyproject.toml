@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 plots = ["matplotlib>=3.8", "pandas>=2.1"]
+flightstack = ["pyulog>=1.0", "pymavlink>=2.4"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]

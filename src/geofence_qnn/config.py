@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +19,40 @@ class EnvironmentConfig:
     goal: tuple[float, float]
     forbidden_box: tuple[float, float, float, float]
     safety_margin: float
+
+
+@dataclass(frozen=True)
+class DataConfig:
+    """Where the state-action training data comes from.
+
+    source:
+        synthetic       - teacher controller on sampled states (default, legacy behavior)
+        px4_ulog        - PX4 Autopilot .ulg flight logs (requires pyulog)
+        ardupilot_log   - ArduPilot DataFlash .bin/.log or MAVLink .tlog (requires pymavlink)
+        csv             - generic CSV trajectories with columns t,x,y,vx,vy[,ax,ay]
+    """
+
+    source: str = "synthetic"
+    logs: tuple[str, ...] = ()
+    frame: str = "auto"  # auto | ned | xy
+    topic: str = "vehicle_local_position"  # PX4 ULog topic
+    message: str = "auto"  # ArduPilot/MAVLink message type override
+    offset: tuple[float, float] = (0.0, 0.0)  # shift log positions into the experiment frame
+    synthetic_fraction: float = 0.0  # fraction of the dataset drawn from the synthetic teacher
+
+
+@dataclass(frozen=True)
+class TeacherConfig:
+    """Which controller acts as the safety teacher / simulation baseline.
+
+    backend:
+        builtin    - PID/CBF-style potential-field teacher (legacy behavior)
+        px4        - behavioral model of the PX4 Autopilot geofence (GF_PREDICT + hold)
+        ardupilot  - behavioral model of the ArduPilot AC_Avoid fence (sqrt-controller slide)
+    """
+
+    backend: str = "builtin"
+    params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -45,6 +79,9 @@ class VerificationConfig:
     initial_box: tuple[float, ...]
 
 
+DEFAULT_CONTROLLERS = ("teacher", "float", "int8", "int8_shield")
+
+
 @dataclass(frozen=True)
 class SimulationConfig:
     episodes: int
@@ -52,6 +89,7 @@ class SimulationConfig:
     wind_bound: float
     localization_error: float
     shield_horizon: int
+    controllers: tuple[str, ...] = DEFAULT_CONTROLLERS
 
 
 @dataclass(frozen=True)
@@ -61,6 +99,8 @@ class ExperimentConfig:
     training: TrainingConfig
     verification: VerificationConfig
     simulation: SimulationConfig
+    data: DataConfig = DataConfig()
+    teacher: TeacherConfig = TeacherConfig()
 
 
 def _tuple(d: dict[str, Any], key: str) -> tuple:
@@ -73,6 +113,8 @@ def load_config(path: str | Path) -> ExperimentConfig:
     t = raw["training"]
     v = raw["verification"]
     s = raw["simulation"]
+    d = raw.get("data") or {}
+    tc = raw.get("teacher") or {}
     return ExperimentConfig(
         seed=int(raw["seed"]),
         environment=EnvironmentConfig(
@@ -113,5 +155,19 @@ def load_config(path: str | Path) -> ExperimentConfig:
             wind_bound=float(s["wind_bound"]),
             localization_error=float(s["localization_error"]),
             shield_horizon=int(s["shield_horizon"]),
+            controllers=tuple(str(c) for c in s.get("controllers", DEFAULT_CONTROLLERS)),
+        ),
+        data=DataConfig(
+            source=str(d.get("source", "synthetic")),
+            logs=tuple(str(p) for p in d.get("logs", [])),
+            frame=str(d.get("frame", "auto")),
+            topic=str(d.get("topic", "vehicle_local_position")),
+            message=str(d.get("message", "auto")),
+            offset=tuple(float(x) for x in d.get("offset", (0.0, 0.0))),
+            synthetic_fraction=float(d.get("synthetic_fraction", 0.0)),
+        ),
+        teacher=TeacherConfig(
+            backend=str(tc.get("backend", "builtin")),
+            params=dict(tc.get("params") or {}),
         ),
     )
