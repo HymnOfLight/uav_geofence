@@ -1,0 +1,51 @@
+# Train the QNN from real PX4 Autopilot flights instead of synthetic teacher
+# data. Point `data.logs` at your .ulg files (from real flights or SITL, e.g.
+# recorded under ~/.ros or PX4's log directory). Requires `pip install -e
+# '.[flightstack]'` for pyulog. The verification stages (E0/E1/E2) and the
+# Monte Carlo comparison are unchanged: they operate on the exported INT8 QNN.
+seed: 42
+environment:
+  dt: 0.05
+  integration_dt: 0.01
+  vmax: 8.0
+  amax: 4.0
+  position_scale: 50.0
+  world_min: [-100.0, -100.0]
+  world_max: [100.0, 100.0]
+  goal: [70.0, 0.0]
+  forbidden_box: [-5.0, 5.0, -15.0, 15.0]
+  safety_margin: 1.0
+data:
+  source: px4_ulog
+  logs: ["logs/px4/*.ulg"]
+  topic: vehicle_local_position
+  frame: auto             # NED logs are mapped to world x=east, y=north
+  offset: [0.0, 0.0]      # shift log positions into the experiment frame
+  synthetic_fraction: 0.25  # top up with teacher samples for state coverage
+teacher:
+  backend: px4
+training:
+  hidden: [32, 32]
+  samples: 50000
+  epochs: 300
+  batch_size: 1024
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  qscale: 32
+verification:
+  workers: 16
+  e0_inputs: 1000
+  grid_cells: 2000
+  cell_width: 0.25
+  boundary_band: 10.0
+  timeout_ms: 60000
+  horizon_steps: 40
+  max_refinement_depth: 4
+  initial_box: [-35.0, -15.0, -10.0, 10.0, 1.0, 6.0, -1.5, 1.5]
+simulation:
+  episodes: 10000
+  steps: 400
+  wind_bound: 0.5
+  localization_error: 0.5
+  shield_horizon: 20
+  controllers: [teacher, px4, float, int8, int8_shield]

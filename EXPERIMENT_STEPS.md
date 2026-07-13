@@ -71,7 +71,9 @@ python -m geofence_qnn.cli all \
 
 ### 步骤 1.2：生成教师数据
 
-`data.py` 从禁飞区外采样状态；`TeacherController` 使用目标吸引、速度阻尼和边界排斥生成动作。训练/测试按固定顺序 80%/20% 切分。
+`data.py` 从禁飞区外采样状态；教师由 `teacher.backend` 决定：`builtin`（目标吸引、速度阻尼和边界排斥）、`px4`（PX4 位置环级联 + GF_PREDICT 预测刹车）或 `ardupilot`（AC_Avoid 平方根限速滑移）。训练/测试按固定顺序 80%/20% 切分。
+
+若使用真实飞行数据而非合成数据，把 `data.source` 设为 `px4_ulog`、`ardupilot_log` 或 `csv` 并给出 `data.logs`，详见第十四节。
 
 运行：
 
@@ -359,3 +361,48 @@ python scripts/run_seed_sweep.py \
 2. 定位误差—最小安全裕度/UNKNOWN 率；
 3. 屏蔽安全收益—任务性能 Pareto 曲线；
 4. 网络规模—求解时间分布。
+
+## 十四、开源飞控（PX4 Autopilot / ArduPilot）实验路径
+
+### 步骤 14.1：安装可选依赖
+
+```bash
+python -m pip install -e '.[flightstack]'   # pyulog + pymavlink
+```
+
+核心验证流水线（E0—E2）不依赖这些包；只有日志解析和 SITL 录制需要。
+
+### 步骤 14.2：用真实飞行日志训练
+
+1. 把 PX4 `.ulg`（真机或 SITL 均可）放入 `logs/px4/`，或把 ArduPilot DataFlash `.bin`/MAVLink `.tlog` 放入 `logs/ardupilot/`；
+2. 以 `configs/px4_ulog.yaml` 或 `configs/ardupilot_log.yaml` 为模板，检查：
+   - `data.offset`：把日志局部坐标平移到实验围栏几何中，使被验证的边界带确实被飞行数据覆盖；
+   - `data.synthetic_fraction`：日志覆盖不足时按比例混入教师样本；
+3. 正常运行 `train/e0/e1/e2/mc`。`training_summary.json` 中的 `data_source`、`data_logs` 和 `teacher_backend` 字段记录数据来源，论文中必须报告。
+
+验收标准与合成数据相同（E0 100% 一致等），另加：日志转换后落在边界带内的样本数不得为零，否则 E1 结论对训练分布不具代表性。
+
+### 步骤 14.3：PX4 / ArduPilot 围栏行为基线
+
+`simulation.controllers` 加入 `px4` 和/或 `ardupilot` 后，蒙特卡洛主表会多出对应的行为基线行（与其他控制器共享同一组初始状态与扰动种子，属于配对实验）：
+
+```bash
+python -m geofence_qnn.cli mc --config configs/smoke_flightstack.yaml --output runs/smoke_fs
+```
+
+论文中这两行必须标注为"文档所述围栏逻辑的行为级模型"，不得写成固件本体结果。
+
+### 步骤 14.4：SITL 固件级数据采集
+
+1. 启动 SITL：PX4 用 `make px4_sitl jmavsim`，ArduPilot 用 `sim_vehicle.py -v ArduCopter --console --map`；
+2. 上传围栏并规划任务（QGroundControl / MAVProxy）；
+3. 录制：
+
+```bash
+python -m geofence_qnn.cli sitl-record --config configs/main.yaml --output runs/sitl \
+  --url udp:127.0.0.1:14550 --episodes 10 --duration 120 --rate 20
+```
+
+4. 把输出 `runs/sitl/sitl_trajectories.csv` 填入 `data.logs` 并设 `data.source: csv`，回到步骤 14.2。
+
+录制器只读取 `LOCAL_POSITION_NED` 并转换到世界系，不解锁、不切模式；`--command-goal` 仅在 OFFBOARD/GUIDED 下有效。

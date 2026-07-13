@@ -1,4 +1,7 @@
 numpy>=1.26
 PyYAML>=6.0
 z3-solver>=4.13
+# Optional: PX4 / ArduPilot flight log and SITL integration
+# pyulog>=1.0
+# pymavlink>=2.4
 

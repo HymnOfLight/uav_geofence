@@ -35,7 +35,12 @@ def controller_action(
     vmax: float,
     float_model: MLP | None,
     int8_model: Int8MLP | None,
+    teachers: dict[str, object] | None = None,
 ) -> np.ndarray:
+    # Teacher-style baselines (builtin teacher, PX4/ArduPilot behavioral
+    # models, ...) all share the same action(...) interface.
+    if teachers and kind in teachers:
+        return teachers[kind].action(state_est, goal, geofence, amax, margin)
     if kind == "teacher":
         return TeacherController().action(state_est, goal, geofence, amax, margin)
     feat = state_features(state_est, goal, geofence, position_scale, vmax)
@@ -84,6 +89,7 @@ def run_episode(
     rng: np.random.Generator,
     float_model: MLP | None = None,
     int8_model: Int8MLP | None = None,
+    teachers: dict[str, object] | None = None,
 ) -> EpisodeResult:
     x = np.asarray(initial_state, float).copy()
     min_clearance = geofence.clearance(x[:2])
@@ -95,7 +101,7 @@ def run_episode(
         est = x.copy()
         est[:2] += rng.uniform(-localization_error, localization_error, size=2)
         u = controller_action(
-            kind, est, goal, geofence, amax, margin, position_scale, vmax, float_model, int8_model
+            kind, est, goal, geofence, amax, margin, position_scale, vmax, float_model, int8_model, teachers
         )
         if kind == "int8_shield":
             t0 = time.perf_counter_ns()
@@ -149,10 +155,17 @@ def run_monte_carlo(
     seed: int,
     float_model: MLP,
     int8_model: Int8MLP,
+    teacher: object | None = None,
 ) -> list[dict]:
     master = np.random.default_rng(seed)
     initial_states = master.uniform(initial_lo, initial_hi, size=(episodes, 4))
     episode_seeds = master.integers(0, 2**32 - 1, size=episodes, dtype=np.uint64)
+    teachers: dict[str, object] = {"teacher": teacher or TeacherController()}
+    for kind in kinds:
+        if kind in ("px4", "ardupilot") and kind not in teachers:
+            from .flightstack.teachers import make_teacher
+
+            teachers[kind] = make_teacher(kind, vmax=vmax, amax=amax)
     summaries = []
     for kind in kinds:
         rows = []
@@ -177,6 +190,7 @@ def run_monte_carlo(
                     rng,
                     float_model,
                     int8_model,
+                    teachers,
                 )
             )
         violations = sum(x.violated for x in rows)
