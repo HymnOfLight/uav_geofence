@@ -290,7 +290,15 @@ def load_trajectories(
             matched = [pattern]
         paths.extend(matched)
     if not paths:
-        raise FileNotFoundError(f"no flight logs matched patterns: {list(patterns)}")
+        raise FileNotFoundError(
+            f"no flight logs matched patterns: {list(patterns)} "
+            f"(searched from {Path.cwd()}). Point data.logs at existing files, or if you "
+            "have no real flight logs: (1) generate demo CSV logs with "
+            "`python scripts/make_demo_logs.py` and use configs/demo_csv.yaml, "
+            "(2) record from a running SITL with `python -m geofence_qnn.cli sitl-record`, "
+            "(3) download public .ulg logs from https://logs.px4.io, or "
+            "(4) use synthetic data with a flight-stack teacher (configs/smoke_flightstack.yaml)."
+        )
     trajectories: list[Trajectory] = []
     for path in paths:
         if source == "px4_ulog":
@@ -352,7 +360,12 @@ def trajectories_to_dataset(
         states_list.append(states[keep])
         actions_list.append(np.clip(actions[keep], -amax, amax))
     if not states_list:
-        raise ValueError("no usable state-action samples outside the geofence in the flight logs")
+        raise ValueError(
+            "no usable state-action samples outside the geofence in the flight logs; "
+            "check that data.offset places the logged positions in the experiment frame "
+            "and that the flights actually move (velocities below 1.5*vmax, positions "
+            "outside the expanded forbidden box)"
+        )
     states = np.vstack(states_list)
     actions = np.vstack(actions_list)
     x = np.vstack([state_features(s, goal, geofence, position_scale, vmax) for s in states])
