@@ -491,7 +491,7 @@ commander mode auto:mission
 #### 14.5.3 ArduPilot SITL 配置步骤
 
 ```bash
-# 安装（一次性）
+# 安装（一次性；容器只有 root 时官方脚本会拒绝运行，见 14.5.5 的绕过方法）
 git clone https://github.com/ArduPilot/ardupilot.git --recursive
 cd ardupilot
 Tools/environment_install/install-prereqs-ubuntu.sh -y && . ~/.profile
@@ -534,6 +534,19 @@ python -m geofence_qnn.cli sitl-record --config configs/main.yaml --output runs/
 
 #### 14.5.5 常见问题
 
+- **容器只有 root（AutoDL 等租用环境）**：ArduPilot 的 `install-prereqs-ubuntu.sh` 硬性拒绝 root（`Please do not run this script as root`），但该脚本只是依赖安装的封装，编译（waf）与运行（sim_vehicle.py）不检查 root。直接手动装依赖即可：
+
+```bash
+apt-get update
+apt-get install -y git g++ ccache pkg-config libtool libxml2-dev libxslt1-dev \
+    python3-dev python-is-python3
+# empy 必须锁 3.3.4：empy 4.x 会使 ArduPilot 代码生成报错
+python -m pip install empy==3.3.4 pexpect future pymavlink MAVProxy dronecan intelhex
+cd ardupilot && git submodule update --init --recursive
+Tools/autotest/sim_vehicle.py -v ArduCopter -w --console   # 自动完成 waf 编译
+```
+
+  若坚持用官方脚本，则新建非 root 用户（`apt-get install -y sudo && useradd -m -s /bin/bash uav && echo 'uav ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers`），并把 ardupilot 仓库移出 `/root`（其他用户无法进入该目录）后 `su - uav` 执行。PX4 的 `Tools/setup/ubuntu.sh` 不拒绝 root，但内部调用 `sudo`，容器里通常要先 `apt-get install -y sudo`；
 - **`sitl-record` 报 no MAVLink heartbeat**：端口被 QGC 独占或写错。QGC 和录制器可同时收 14550（UDP 广播），但若不行，PX4 可再开一路输出（pxh：`mavlink start -u 14552 -o 14552`，然后 `--url udp:127.0.0.1:14552`）；ArduPilot 在 sim_vehicle.py 加 `--out 127.0.0.1:14552`；
 - **录出的 CSV 位置全为 0**：飞控还没起飞或 EKF 未就绪，先确认 QGC 显示 Ready to fly 再录；
 - **飞行器直接穿过了围栏**：PX4 检查 `GF_ACTION≥2` 且围栏已 Upload（QGC Plan 视图能看到红色多边形）；ArduPilot 检查 `FENCE_ENABLE=1`、`FENCE_TYPE` 含 4，且解锁前围栏已上传；
