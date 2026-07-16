@@ -45,6 +45,15 @@ GOAL = np.array([60.0, 0.0])
 AMAX, VMAX, MARGIN, SCALE = 4.0, 8.0, 1.0, 50.0
 
 
+def _load_script(name: str):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).parents[1] / f"scripts/{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class TeacherBackendTests(unittest.TestCase):
     def test_factory_backends(self):
         self.assertIsInstance(make_teacher("builtin"), TeacherController)
@@ -320,18 +329,31 @@ class RealLogHelpersTests(unittest.TestCase):
             self.assertEqual(list(cache.glob("*")), [])
 
     def test_fetch_script_duration_parser(self):
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location(
-            "fetch_px4_logs", Path(__file__).parents[1] / "scripts/fetch_px4_logs.py"
-        )
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = _load_script("fetch_px4_logs")
         self.assertEqual(module.parse_duration_s("21s"), 21)
         self.assertEqual(module.parse_duration_s("3m17s"), 197)
         self.assertEqual(module.parse_duration_s("11m7s"), 667)
         self.assertEqual(module.parse_duration_s("1h2m3s"), 3723)
         self.assertEqual(module.parse_duration_s("garbage"), 0)
+
+    def test_sitl_setup_generator_roundtrip(self):
+        import json
+        import math
+
+        module = _load_script("make_sitl_setup")
+        home = module.DEFAULT_HOME
+        polygon = module.box_polygon((-5.0, 5.0, -15.0, 15.0), 1.0, home)
+        self.assertEqual(len(polygon), 4)
+        for (lat, lon), (ex, ey) in zip(polygon, [(-6, -16), (6, -16), (6, 16), (-6, 16)]):
+            x = (lon - home[1]) * module.EARTH_M_PER_DEG * math.cos(math.radians(home[0]))
+            y = (lat - home[0]) * module.EARTH_M_PER_DEG
+            self.assertAlmostEqual(x, ex, places=3)
+            self.assertAlmostEqual(y, ey, places=3)
+        plan = module.make_plan(polygon, home, [(-35.0, 0.0), (70.0, 0.0)], 10.0, firmware_type=12)
+        json.dumps(plan)  # must be serializable
+        self.assertEqual(plan["fileType"], "Plan")
+        self.assertFalse(plan["geoFence"]["polygons"][0]["inclusion"])
+        self.assertEqual([item["command"] for item in plan["mission"]["items"]], [22, 16])
 
 
 class ConfigAndPipelineTests(unittest.TestCase):

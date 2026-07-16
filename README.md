@@ -141,14 +141,20 @@ python -m geofence_qnn.cli all --config configs/smoke_flightstack.yaml --output 
 
 ### 3.3 从运行中的 SITL 录制轨迹
 
-`sitl-record` 通过 MAVLink 连接正在运行的 PX4 SITL（`make px4_sitl jmavsim`）或 ArduPilot SITL（`sim_vehicle.py -v ArduCopter`），录制 `LOCAL_POSITION_NED` 到 CSV（自动转世界系），随后用 `data.source: csv` 训练：
+先从实验配置自动生成飞控侧配置（QGC 围栏/任务计划 + PX4 `param set` 行 + ArduPilot `.parm` 参数文件），保证 SITL 围栏与被验证集合一致：
+
+```bash
+python scripts/make_sitl_setup.py --config configs/main.yaml --output fences/
+```
+
+随后 `sitl-record` 通过 MAVLink 连接正在运行的 PX4 SITL（`make px4_sitl jmavsim`）或 ArduPilot SITL（`sim_vehicle.py -v ArduCopter`），录制 `LOCAL_POSITION_NED` 到 CSV（自动转世界系），再用 `data.source: csv` 训练：
 
 ```bash
 python -m geofence_qnn.cli sitl-record --config configs/smoke.yaml --output runs/sitl \
   --url udp:127.0.0.1:14550 --episodes 5 --duration 120 --rate 20
 ```
 
-录制器不改飞行模式、不解锁；任务、围栏上传与模式切换由操作者（QGroundControl / MAVProxy）负责。`--command-goal` 可选地向配置目标点流式发送位置设定值（需 OFFBOARD/GUIDED 模式）。
+录制器不改飞行模式、不解锁；任务、围栏上传与模式切换由操作者（QGroundControl / MAVProxy）负责。`--command-goal` 可选地向配置目标点流式发送位置设定值（需 OFFBOARD/GUIDED 模式）。SITL 的逐步安装、围栏参数（`GF_ACTION`/`GF_PREDICT`、`FENCE_*`/`AVOID_*`）配置与常见问题排查见 [EXPERIMENT_STEPS.md](EXPERIMENT_STEPS.md) 步骤 14.5。
 
 ## 4. 研究边界
 
