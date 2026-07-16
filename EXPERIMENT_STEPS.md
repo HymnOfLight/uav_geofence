@@ -415,19 +415,127 @@ python -m geofence_qnn.cli all --config configs/demo_csv.yaml --output runs/demo
 python -m geofence_qnn.cli mc --config configs/smoke_flightstack.yaml --output runs/smoke_fs
 ```
 
-论文中这两行必须标注为"文档所述围栏逻辑的行为级模型"，不得写成固件本体结果。
+行为教师的参数名与真实飞控参数一一对应，可经 `teacher.params` 覆盖：
 
-### 步骤 14.5：SITL 固件级数据采集
+| 实验概念 | `px4` 教师参数 | 对应 PX4 参数 | `ardupilot` 教师参数 | 对应 ArduPilot 参数 |
+|---|---|---|---|---|
+| 位置环增益 | `mpc_xy_p` (0.95) | `MPC_XY_P` | `pos_p` (1.0) | `PSC_POSXY_P` |
+| 速度环增益 | `mpc_xy_vel_p` (1.8) | `MPC_XY_VEL_P_ACC` | `vel_p` (2.0) | `PSC_VELXY_P` |
+| 水平速度上限 | `mpc_xy_vel_max`（=vmax） | `MPC_XY_VEL_MAX` | `wpnav_speed`（=vmax） | `WPNAV_SPEED`（cm/s） |
+| 避障减速度 | `mpc_dec_hor_max`（=0.75·amax） | `MPC_DEC_HOR_MAX` | `avoid_accel`（=0.75·amax） | `AVOID_ACCEL_MAX` |
+| 预测刹车开关 | `gf_predict` (true) | `GF_PREDICT` | —（平方根限速恒开） | `AVOID_ENABLE` |
+| 裕度内退避速度 | —（外推持稳） | — | `avoid_backup_spd` (0.75) | `AVOID_BACKUP_SPD` |
 
-1. 启动 SITL：PX4 用 `make px4_sitl jmavsim`，ArduPilot 用 `sim_vehicle.py -v ArduCopter --console --map`；
-2. 上传围栏并规划任务（QGroundControl / MAVProxy）；
-3. 录制：
+```yaml
+teacher:
+  backend: px4
+  params: {mpc_xy_p: 1.2, gf_predict: true}
+```
+
+论文中这两个基线必须标注为"文档所述围栏逻辑的行为级模型"，不得写成固件本体结果。
+
+### 步骤 14.5：SITL 固件级数据采集（详细）
+
+SITL 跑的是与真机相同的固件代码，是没有真机时最强的证据来源。整个流程分五步：安装 SITL → 生成围栏/参数/任务文件 → 配置并起飞 → 录制 → 回到步骤 14.3 训练。
+
+#### 14.5.1 生成围栏、参数与任务文件
+
+先从实验配置自动生成飞控侧的配置产物，保证 SITL 的围栏与 QNN 被验证的集合是同一个：
+
+```bash
+python scripts/make_sitl_setup.py --config configs/main.yaml --output fences/
+```
+
+生成四个文件：
+
+| 文件 | 用途 |
+|---|---|
+| `fences/px4_geofence.plan` | QGC 计划文件：禁飞矩形按 `safety_margin` 外扩后的排除多边形（PX4 无围栏裕度参数），附带一条"起飞→穿越围栏走廊→目标点"的任务 |
+| `fences/px4_params.txt` | 粘贴进 pxh shell 的 `param set` 行（围栏动作、预测刹车、速度/加速度上限与实验对齐） |
+| `fences/ardupilot_geofence.plan` | 同上但用原始矩形（ArduPilot 用 `FENCE_MARGIN` 自行处理裕度，避免双重外扩） |
+| `fences/ardupilot_params.parm` | MAVProxy `param load` 用的参数文件（围栏、避障、WPNAV 限幅） |
+
+坐标约定：世界系 x=东、y=北，原点在 `--home-lat/--home-lon`（默认 PX4 SITL 的苏黎世家点）。围栏角点、任务航点都按此从米转经纬度；录制器和日志加载器用同一约定转回，因此录出的数据与实验几何直接对齐，无需手调 `data.offset`。
+
+#### 14.5.2 PX4 SITL 配置步骤
+
+```bash
+# 安装（一次性，需要 Ubuntu；AutoDL 等无显示环境加 HEADLESS=1）
+git clone https://github.com/PX4/PX4-Autopilot.git --recursive
+cd PX4-Autopilot
+bash ./Tools/setup/ubuntu.sh          # 安装工具链，装完重开终端
+
+# 启动（二选一；HEADLESS=1 表示不开仿真器窗口）
+HEADLESS=1 make px4_sitl jmavsim      # 轻量
+make px4_sitl gz_x500                 # v1.14+ 的 Gazebo 模型
+
+# 在出现的 pxh> shell 里逐行粘贴 fences/px4_params.txt 的内容：
+#   param set GF_ACTION 2            # 围栏触发动作：hold（悬停在围栏外）
+#   param set GF_PREDICT 1           # 预测刹车：按刹车距离提前动作
+#   param set MPC_XY_VEL_MAX 8       # 与实验 vmax 对齐
+#   param set MPC_ACC_HOR 4          # 与实验 amax 对齐
+#   param set MPC_DEC_HOR_MAX 4      # GF_PREDICT 使用的减速度
+```
+
+围栏与任务上传：打开 QGroundControl（自动连接 `udp:14550`）→ Plan 视图 → File → Open 选 `fences/px4_geofence.plan` → Upload。计划里已包含起飞点和飞向目标的航点，围栏挡在中间。起飞执行任务：
+
+```bash
+# 方式一：QGC 界面点 Fly → Start Mission
+# 方式二：pxh shell
+commander arm
+commander mode auto:mission
+```
+
+`GF_ACTION` 可选值：1=警告、2=hold（推荐，产生"逼近-刹停"数据）、3=返航、5=降落。想要更丰富的避障数据，可以在 QGC 里手动 Position 模式向围栏飞几次。
+
+#### 14.5.3 ArduPilot SITL 配置步骤
+
+```bash
+# 安装（一次性）
+git clone https://github.com/ArduPilot/ardupilot.git --recursive
+cd ardupilot
+Tools/environment_install/install-prereqs-ubuntu.sh -y && . ~/.profile
+
+# 启动（首次加 -w 初始化参数；无显示环境去掉 --map）
+Tools/autotest/sim_vehicle.py -v ArduCopter --console
+# 默认已输出 MAVLink 到 udp:14550（QGC）和 udp:14551
+
+# 在 MAVProxy 提示符里：
+param load fences/ardupilot_params.parm
+# 关键参数含义：
+#   FENCE_ENABLE=1, FENCE_TYPE=4     多边形围栏
+#   FENCE_MARGIN=1                   与实验 safety_margin 对齐
+#   AVOID_ENABLE=7                   低速下主动避围栏（产生滑移数据）
+#   WPNAV_SPEED=800, WPNAV_ACCEL=400 cm 单位，与实验 vmax/amax 对齐
+```
+
+围栏与任务上传同样用 QGC 打开 `fences/ardupilot_geofence.plan` 并 Upload（QGC 会把排除多边形写成 ArduPilot 围栏项）。起飞执行：
+
+```bash
+# MAVProxy 提示符
+mode GUIDED
+arm throttle
+takeoff 10
+mode AUTO          # 执行已上传的任务；或留在 GUIDED 手动发目标点
+```
+
+#### 14.5.4 录制与回收
+
+SITL 起飞后，在仓库目录另开终端录制：
 
 ```bash
 python -m geofence_qnn.cli sitl-record --config configs/main.yaml --output runs/sitl \
   --url udp:127.0.0.1:14550 --episodes 10 --duration 120 --rate 20
 ```
 
-4. 把输出 `runs/sitl/sitl_trajectories.csv` 填入 `data.logs` 并设 `data.source: csv`，回到步骤 14.3。
+录制器只读 `LOCAL_POSITION_NED` 并按 x=东、y=北 转成世界系 CSV，不解锁、不切模式；`--command-goal` 会以 2 Hz 向配置目标点发位置设定值，仅在 PX4 OFFBOARD / ArduPilot GUIDED 模式下生效（任务飞行时不需要）。随后把 `runs/sitl/sitl_trajectories.csv` 填入 `data.logs`、设 `data.source: csv`，回到步骤 14.3。
 
-录制器只读取 `LOCAL_POSITION_NED` 并转换到世界系，不解锁、不切模式；`--command-goal` 仅在 OFFBOARD/GUIDED 下有效。
+另一条等价路径是直接用 SITL 自动落盘的标准日志：PX4 在 `PX4-Autopilot/build/px4_sitl_default/rootfs/log/<日期>/*.ulg`（用 `data.source: px4_ulog` 读），ArduPilot 在 sim_vehicle 运行目录的 `logs/*.BIN`（用 `data.source: ardupilot_log` 读）；这条路径还能拿到日志里的加速度通道。
+
+#### 14.5.5 常见问题
+
+- **`sitl-record` 报 no MAVLink heartbeat**：端口被 QGC 独占或写错。QGC 和录制器可同时收 14550（UDP 广播），但若不行，PX4 可再开一路输出（pxh：`mavlink start -u 14552 -o 14552`，然后 `--url udp:127.0.0.1:14552`）；ArduPilot 在 sim_vehicle.py 加 `--out 127.0.0.1:14552`；
+- **录出的 CSV 位置全为 0**：飞控还没起飞或 EKF 未就绪，先确认 QGC 显示 Ready to fly 再录；
+- **飞行器直接穿过了围栏**：PX4 检查 `GF_ACTION≥2` 且围栏已 Upload（QGC Plan 视图能看到红色多边形）；ArduPilot 检查 `FENCE_ENABLE=1`、`FENCE_TYPE` 含 4，且解锁前围栏已上传；
+- **数据里几乎没有边界带样本**：任务航点没有真正逼近围栏，用生成的 plan 里的穿越任务，或手动多飞几次"朝围栏冲再被挡下"的轨迹；`data.synthetic_fraction` 可补覆盖但不能替代真实避障行为；
+- **家点不同导致几何错位**：录制与训练共用一套 `--home-lat/lon` 生成的文件即可；若日志来自其他家点，用 `data.auto_align: true` 兜底。
