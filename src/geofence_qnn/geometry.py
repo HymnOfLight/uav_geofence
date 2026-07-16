@@ -29,6 +29,16 @@ class ForbiddenBox:
             and self.ymin - margin <= y <= self.ymax + margin
         )
 
+    def contains_batch(self, points: np.ndarray, margin: float = 0.0) -> np.ndarray:
+        """Vectorized :meth:`contains` for an (n, 2) position array."""
+        points = np.asarray(points, dtype=float)
+        return (
+            (points[:, 0] >= self.xmin - margin)
+            & (points[:, 0] <= self.xmax + margin)
+            & (points[:, 1] >= self.ymin - margin)
+            & (points[:, 1] <= self.ymax + margin)
+        )
+
     def clearance(self, p: np.ndarray) -> float:
         """Signed Euclidean clearance: positive outside, negative inside."""
         x, y = float(p[0]), float(p[1])

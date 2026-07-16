@@ -372,17 +372,42 @@ python -m pip install -e '.[flightstack]'   # pyulog + pymavlink
 
 核心验证流水线（E0—E2）不依赖这些包；只有日志解析和 SITL 录制需要。
 
-### 步骤 14.2：用真实飞行日志训练
+### 步骤 14.2：没有自己的飞行日志时的四个选项
 
-1. 把 PX4 `.ulg`（真机或 SITL 均可）放入 `logs/px4/`，或把 ArduPilot DataFlash `.bin`/MAVLink `.tlog` 放入 `logs/ardupilot/`；
+按证据强度从高到低：
+
+1. **公开真机日志（最短路径，两条命令）**：
+
+```bash
+python scripts/fetch_px4_logs.py --count 5 --dest logs/px4
+python -m geofence_qnn.cli all --config configs/px4_public_logs.yaml --output runs/px4_public
+```
+
+   脚本从 [logs.px4.io](https://logs.px4.io) 公开数据库按机型/时长/飞行模式过滤并下载真实四旋翼飞行，逐个解析验证；`data.auto_align: true` 自动把每条航迹平移到围栏几何上，无需手调 `data.offset`。`data.logs` 也可直接填 Flight Review 下载 URL，自动下载并缓存到 `logs/_downloads/`；
+2. **SITL 录制（固件级证据）**：SITL 跑的是与真机相同的固件代码，按步骤 14.5 录制后走 `data.source: csv`；SITL 自身产生的 `.ulg`/`.bin` 也可直接用步骤 14.3 的加载器读取；
+3. **演示 CSV 日志（零外部依赖，验证链路用）**：
+
+```bash
+python scripts/make_demo_logs.py --config configs/demo_csv.yaml --backend px4 --output logs/demo
+python -m geofence_qnn.cli all --config configs/demo_csv.yaml --output runs/demo_csv
+```
+
+   它用 PX4/ArduPilot 行为教师闭环 rollout 生成 CSV 轨迹，走与真实日志完全相同的摄取代码；论文中只能标注为"行为级模型 rollout"；
+4. **合成数据 + 飞控行为教师**：`data.source: synthetic` 配 `teacher.backend: px4/ardupilot`（`configs/smoke_flightstack.yaml`），完全不经过日志链路。
+
+建议顺序：直接从 1 开始（真实数据、两条命令）；离线环境先用 3 或 4 打通流程；2 作为固件级证据补充。`training_summary.json` 的 `data_source`/`data_logs`/`teacher_backend` 字段记录每次运行的实际数据来源，论文中据此区分证据等级。
+
+### 步骤 14.3：用自己的飞行日志训练
+
+1. 把 PX4 `.ulg`（真机或 SITL 均可）放入 `logs/px4/`，或把 ArduPilot DataFlash `.bin`/MAVLink `.tlog` 放入 `logs/ardupilot/`（`data.logs` 也接受 http(s) URL，自动下载缓存）；
 2. 以 `configs/px4_ulog.yaml` 或 `configs/ardupilot_log.yaml` 为模板，检查：
-   - `data.offset`：把日志局部坐标平移到实验围栏几何中，使被验证的边界带确实被飞行数据覆盖；
-   - `data.synthetic_fraction`：日志覆盖不足时按比例混入教师样本；
+   - 对齐：优先 `data.auto_align: true`（把每条航迹的包围盒中心平移到围栏中心，只平移位置不动速度/加速度）；需要精确控制时用 `data.offset` 手动平移；
+   - `data.synthetic_fraction`：真实航迹不会绕虚拟围栏飞行，按比例混入教师样本提供避障行为与边界带覆盖；
 3. 正常运行 `train/e0/e1/e2/mc`。`training_summary.json` 中的 `data_source`、`data_logs` 和 `teacher_backend` 字段记录数据来源，论文中必须报告。
 
 验收标准与合成数据相同（E0 100% 一致等），另加：日志转换后落在边界带内的样本数不得为零，否则 E1 结论对训练分布不具代表性。
 
-### 步骤 14.3：PX4 / ArduPilot 围栏行为基线
+### 步骤 14.4：PX4 / ArduPilot 围栏行为基线
 
 `simulation.controllers` 加入 `px4` 和/或 `ardupilot` 后，蒙特卡洛主表会多出对应的行为基线行（与其他控制器共享同一组初始状态与扰动种子，属于配对实验）：
 
@@ -392,7 +417,7 @@ python -m geofence_qnn.cli mc --config configs/smoke_flightstack.yaml --output r
 
 论文中这两行必须标注为"文档所述围栏逻辑的行为级模型"，不得写成固件本体结果。
 
-### 步骤 14.4：SITL 固件级数据采集
+### 步骤 14.5：SITL 固件级数据采集
 
 1. 启动 SITL：PX4 用 `make px4_sitl jmavsim`，ArduPilot 用 `sim_vehicle.py -v ArduCopter --console --map`；
 2. 上传围栏并规划任务（QGroundControl / MAVProxy）；
@@ -403,6 +428,6 @@ python -m geofence_qnn.cli sitl-record --config configs/main.yaml --output runs/
   --url udp:127.0.0.1:14550 --episodes 10 --duration 120 --rate 20
 ```
 
-4. 把输出 `runs/sitl/sitl_trajectories.csv` 填入 `data.logs` 并设 `data.source: csv`，回到步骤 14.2。
+4. 把输出 `runs/sitl/sitl_trajectories.csv` 填入 `data.logs` 并设 `data.source: csv`，回到步骤 14.3。
 
 录制器只读取 `LOCAL_POSITION_NED` 并转换到世界系，不解锁、不切模式；`--command-goal` 仅在 OFFBOARD/GUIDED 下有效。

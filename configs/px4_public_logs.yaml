@@ -1,0 +1,57 @@
+# Train the QNN from real open-source PX4 flights with two commands:
+#
+#   python scripts/fetch_px4_logs.py --count 5 --dest logs/px4
+#   python -m geofence_qnn.cli all --config configs/px4_public_logs.yaml --output runs/px4_public
+#
+# The fetch script downloads real public quadrotor flights from
+# https://logs.px4.io (cite it as the data source). `auto_align: true`
+# translates each flight onto the fence geometry, so no per-file offset
+# tuning is needed; velocities and accelerations are untouched. Direct
+# Flight Review download URLs can also be put into `logs` instead of file
+# paths - they are downloaded once and cached under logs/_downloads/.
+# Verification scale is kept moderate so a first real-log run finishes
+# quickly on CPU; raise grid_cells/timeout/episodes for paper results.
+seed: 42
+environment:
+  dt: 0.05
+  integration_dt: 0.01
+  vmax: 8.0
+  amax: 4.0
+  position_scale: 50.0
+  world_min: [-100.0, -100.0]
+  world_max: [100.0, 100.0]
+  goal: [70.0, 0.0]
+  forbidden_box: [-5.0, 5.0, -15.0, 15.0]
+  safety_margin: 1.0
+data:
+  source: px4_ulog
+  logs: ["logs/px4/*.ulg"]
+  auto_align: true
+  synthetic_fraction: 0.5   # real flights ignore our fence; teacher samples supply avoidance behavior
+teacher:
+  backend: px4
+training:
+  hidden: [32, 32]
+  samples: 20000
+  epochs: 150
+  batch_size: 512
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  qscale: 32
+verification:
+  workers: 4
+  e0_inputs: 200
+  grid_cells: 200
+  cell_width: 0.5
+  boundary_band: 10.0
+  timeout_ms: 10000
+  horizon_steps: 40
+  max_refinement_depth: 3
+  initial_box: [-35.0, -15.0, -10.0, 10.0, 1.0, 6.0, -1.5, 1.5]
+simulation:
+  episodes: 1000
+  steps: 400
+  wind_bound: 0.5
+  localization_error: 0.5
+  shield_horizon: 20
+  controllers: [teacher, px4, float, int8, int8_shield]

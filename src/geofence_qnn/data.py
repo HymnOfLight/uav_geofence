@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from .controller import batch_teacher_actions
-from .features import state_features
+from .features import batch_state_features
 from .geometry import ForbiddenBox, box_from_tuple
 
 
@@ -53,7 +53,7 @@ def make_dataset(
     focused = sample_states(n - n_uniform, rng, focus_min, focus_max, vmax, geofence, margin)
     states = np.vstack([uniform, focused])
     states = states[rng.permutation(len(states))]
-    x = np.vstack([state_features(s, goal, geofence, position_scale, vmax) for s in states])
+    x = batch_state_features(states, goal, geofence, position_scale, vmax)
     actions = batch_teacher_actions(states, goal, geofence, amax, margin, teacher=teacher)
     y = actions / amax
     return states, x, y
@@ -105,6 +105,7 @@ def make_dataset_from_config(cfg, teacher=None) -> tuple[np.ndarray, np.ndarray,
         topic=d.topic,
         message=d.message,
         offset=d.offset,
+        auto_align=d.auto_align,
     )
     if n_synth > 0:
         s2, x2, y2 = make_dataset(

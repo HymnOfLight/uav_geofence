@@ -16,6 +16,8 @@ Three complementary entry points:
 from .teachers import ArduPilotFenceTeacher, PX4GeofenceTeacher, make_teacher
 from .logs import (
     Trajectory,
+    align_trajectories,
+    download_log,
     load_ardupilot_log,
     load_csv_log,
     load_px4_ulog,
@@ -29,6 +31,8 @@ __all__ = [
     "PX4GeofenceTeacher",
     "make_teacher",
     "Trajectory",
+    "align_trajectories",
+    "download_log",
     "load_ardupilot_log",
     "load_csv_log",
     "load_px4_ulog",

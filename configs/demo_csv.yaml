@@ -1,0 +1,52 @@
+# Log-based experiment path without any real flight logs: train from the demo
+# CSV trajectories produced by scripts/make_demo_logs.py. This exercises the
+# same log ingestion code as real ULog/DataFlash files (loading, resampling,
+# action extraction, geofence filtering) at smoke scale, so it validates the
+# pipeline quickly on CPU. The data is behavioral-model rollouts, not real
+# flights; results must not be reported as firmware or flight-test evidence.
+#
+#   python scripts/make_demo_logs.py --config configs/demo_csv.yaml --backend px4 --output logs/demo
+#   python -m geofence_qnn.cli all --config configs/demo_csv.yaml --output runs/demo_csv
+seed: 42
+environment:
+  dt: 0.05
+  integration_dt: 0.01
+  vmax: 8.0
+  amax: 4.0
+  position_scale: 50.0
+  world_min: [-80.0, -80.0]
+  world_max: [80.0, 80.0]
+  goal: [60.0, 0.0]
+  forbidden_box: [-5.0, 5.0, -12.0, 12.0]
+  safety_margin: 1.0
+data:
+  source: csv
+  logs: ["logs/demo/*.csv"]
+  synthetic_fraction: 0.3   # top up log data with teacher samples for coverage
+teacher:
+  backend: px4
+training:
+  hidden: [16, 16]
+  samples: 5000
+  epochs: 120
+  batch_size: 256
+  learning_rate: 0.002
+  weight_decay: 0.00001
+  qscale: 32
+verification:
+  workers: 1
+  e0_inputs: 50
+  grid_cells: 16
+  cell_width: 0.5
+  boundary_band: 8.0
+  timeout_ms: 1000
+  horizon_steps: 20
+  max_refinement_depth: 2
+  initial_box: [-25.0, -15.0, -6.0, 6.0, 1.0, 5.0, -1.0, 1.0]
+simulation:
+  episodes: 100
+  steps: 400
+  wind_bound: 0.25
+  localization_error: 0.25
+  shield_horizon: 20
+  controllers: [teacher, px4, float, int8, int8_shield]
