@@ -33,11 +33,12 @@ class DataConfig:
     """
 
     source: str = "synthetic"
-    logs: tuple[str, ...] = ()
+    logs: tuple[str, ...] = ()  # file paths, glob patterns or direct http(s) URLs
     frame: str = "auto"  # auto | ned | xy
     topic: str = "vehicle_local_position"  # PX4 ULog topic
     message: str = "auto"  # ArduPilot/MAVLink message type override
     offset: tuple[float, float] = (0.0, 0.0)  # shift log positions into the experiment frame
+    auto_align: bool = False  # translate each flight onto the fence geometry automatically
     synthetic_fraction: float = 0.0  # fraction of the dataset drawn from the synthetic teacher
 
 
@@ -164,6 +165,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
             topic=str(d.get("topic", "vehicle_local_position")),
             message=str(d.get("message", "auto")),
             offset=tuple(float(x) for x in d.get("offset", (0.0, 0.0))),
+            auto_align=bool(d.get("auto_align", False)),
             synthetic_fraction=float(d.get("synthetic_fraction", 0.0)),
         ),
         teacher=TeacherConfig(

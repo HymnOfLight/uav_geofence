@@ -15,18 +15,28 @@ def state_features(
     vmax: float,
 ) -> np.ndarray:
     """Six affine features, clipped to the training normalization range."""
-    p = np.asarray(state[:2], dtype=float)
-    v = np.asarray(state[2:], dtype=float)
-    raw = np.array(
+    return batch_state_features(np.asarray(state, dtype=float)[None, :], goal, geofence, position_scale, vmax)[0]
+
+
+def batch_state_features(
+    states: np.ndarray,
+    goal: np.ndarray,
+    geofence: ForbiddenBox,
+    position_scale: float,
+    vmax: float,
+) -> np.ndarray:
+    """Vectorized :func:`state_features` for an (n, 4) state array."""
+    states = np.asarray(states, dtype=float)
+    center = geofence.center
+    raw = np.column_stack(
         [
-            (goal[0] - p[0]) / position_scale,
-            (goal[1] - p[1]) / position_scale,
-            (geofence.center[0] - p[0]) / position_scale,
-            (geofence.center[1] - p[1]) / position_scale,
-            v[0] / vmax,
-            v[1] / vmax,
-        ],
-        dtype=float,
+            (goal[0] - states[:, 0]) / position_scale,
+            (goal[1] - states[:, 1]) / position_scale,
+            (center[0] - states[:, 0]) / position_scale,
+            (center[1] - states[:, 1]) / position_scale,
+            states[:, 2] / vmax,
+            states[:, 3] / vmax,
+        ]
     )
     return np.clip(raw, -1.0, 1.0)
 

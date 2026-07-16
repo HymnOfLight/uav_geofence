@@ -26,14 +26,18 @@ same way as the synthetic teacher actions, so the rest of the pipeline
 from __future__ import annotations
 
 import csv
+import hashlib
 from dataclasses import dataclass
 from glob import glob
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 import numpy as np
 
-from ..features import state_features
+from ..features import batch_state_features
 from ..geometry import ForbiddenBox
+
+DOWNLOAD_CACHE = Path("logs/_downloads")
 
 
 @dataclass
@@ -270,6 +274,38 @@ def load_csv_log(
 
 _DEFAULT_FRAMES = {"px4_ulog": "ned", "ardupilot_log": "ned", "csv": "xy"}
 
+_SOURCE_SUFFIX = {"px4_ulog": ".ulg", "ardupilot_log": ".bin", "csv": ".csv"}
+
+
+def download_log(url: str, source: str, cache_dir: str | Path = DOWNLOAD_CACHE) -> Path:
+    """Download an open flight log over http(s) into a local cache.
+
+    The cache key is the URL hash, so re-runs are offline and deterministic.
+    This lets ``data.logs`` reference public logs (e.g. Flight Review download
+    links from https://logs.px4.io) directly, with no manual steps.
+    """
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    name = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16] + _SOURCE_SUFFIX[source]
+    target = cache_dir / name
+    if target.exists() and target.stat().st_size > 0:
+        return target
+    request = Request(url, headers={"User-Agent": "geofence-qnn/0.1"})
+    try:
+        with urlopen(request, timeout=120) as response, target.open("wb") as f:
+            while True:
+                block = response.read(1024 * 1024)
+                if not block:
+                    break
+                f.write(block)
+    except Exception as exc:
+        target.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"failed to download flight log {url}: {exc}. Download it manually and point "
+            "data.logs at the local file instead."
+        ) from exc
+    return target
+
 
 def load_trajectories(
     patterns: tuple[str, ...] | list[str],
@@ -285,6 +321,9 @@ def load_trajectories(
     resolved_frame = _DEFAULT_FRAMES[source] if frame == "auto" else frame
     paths: list[str] = []
     for pattern in patterns:
+        if pattern.startswith(("http://", "https://")):
+            paths.append(str(download_log(pattern, source)))
+            continue
         matched = sorted(glob(pattern, recursive=True))
         if not matched and Path(pattern).exists():
             matched = [pattern]
@@ -295,8 +334,9 @@ def load_trajectories(
             f"(searched from {Path.cwd()}). Point data.logs at existing files, or if you "
             "have no real flight logs: (1) generate demo CSV logs with "
             "`python scripts/make_demo_logs.py` and use configs/demo_csv.yaml, "
-            "(2) record from a running SITL with `python -m geofence_qnn.cli sitl-record`, "
-            "(3) download public .ulg logs from https://logs.px4.io, or "
+            "(2) fetch real public PX4 logs with `python scripts/fetch_px4_logs.py` or put "
+            "https://logs.px4.io download URLs directly into data.logs, "
+            "(3) record from a running SITL with `python -m geofence_qnn.cli sitl-record`, or "
             "(4) use synthetic data with a flight-stack teacher (configs/smoke_flightstack.yaml)."
         )
     trajectories: list[Trajectory] = []
@@ -353,7 +393,7 @@ def trajectories_to_dataset(
         else:
             actions = np.diff(traj.vel, axis=0) / dt
         states = np.column_stack([traj.pos[:-1], traj.vel[:-1]])
-        keep = np.array([not geofence.contains(s[:2], margin=margin) for s in states])
+        keep = ~geofence.contains_batch(states[:, :2], margin=margin)
         keep &= np.abs(states[:, 2:]).max(axis=1) <= 1.5 * vmax
         if not keep.any():
             continue
@@ -362,15 +402,34 @@ def trajectories_to_dataset(
     if not states_list:
         raise ValueError(
             "no usable state-action samples outside the geofence in the flight logs; "
-            "check that data.offset places the logged positions in the experiment frame "
-            "and that the flights actually move (velocities below 1.5*vmax, positions "
-            "outside the expanded forbidden box)"
+            "check that data.offset (or data.auto_align: true) places the logged positions "
+            "in the experiment frame and that the flights actually move (velocities below "
+            "1.5*vmax, positions outside the expanded forbidden box)"
         )
     states = np.vstack(states_list)
     actions = np.vstack(actions_list)
-    x = np.vstack([state_features(s, goal, geofence, position_scale, vmax) for s in states])
+    x = batch_state_features(states, goal, geofence, position_scale, vmax)
     y = actions / amax
     return states, x, y
+
+
+def align_trajectories(trajectories: list[Trajectory], geofence: ForbiddenBox) -> list[Trajectory]:
+    """Shift each flight so its bounding-box center sits on the fence center.
+
+    Real open logs are recorded in arbitrary local frames (often kilometres
+    from the experiment origin). Translating each flight over the fence
+    geometry guarantees the safety-critical boundary band is covered without
+    hand-tuning ``data.offset`` per file. Translation only: velocities,
+    accelerations and time are untouched, so the dynamics stay real.
+    """
+    center = geofence.center
+    aligned = []
+    for traj in trajectories:
+        shift = center - 0.5 * (traj.pos.min(axis=0) + traj.pos.max(axis=0))
+        aligned.append(
+            Trajectory(t=traj.t, pos=traj.pos + shift, vel=traj.vel, acc=traj.acc, source=traj.source)
+        )
+    return aligned
 
 
 def make_flight_log_dataset(
@@ -389,9 +448,12 @@ def make_flight_log_dataset(
     topic: str = "vehicle_local_position",
     message: str = "auto",
     offset: tuple[float, float] = (0.0, 0.0),
+    auto_align: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Full log-to-dataset pipeline with deterministic shuffling/subsampling."""
     trajectories = load_trajectories(patterns, source, frame, topic, message, offset)
+    if auto_align:
+        trajectories = align_trajectories(trajectories, geofence)
     states, x, y = trajectories_to_dataset(
         trajectories, dt, goal, geofence, position_scale, vmax, amax, margin
     )

@@ -20,7 +20,14 @@ from geofence_qnn.flightstack import (
     make_teacher,
     trajectories_to_dataset,
 )
-from geofence_qnn.flightstack.logs import _ulog_to_trajectory, make_flight_log_dataset
+from geofence_qnn.features import batch_state_features, state_features
+from geofence_qnn.flightstack.logs import (
+    Trajectory,
+    _ulog_to_trajectory,
+    align_trajectories,
+    download_log,
+    make_flight_log_dataset,
+)
 from geofence_qnn.geometry import ForbiddenBox
 from geofence_qnn.model import MLP
 from geofence_qnn.quantization import Int8MLP
@@ -215,6 +222,7 @@ class FlightLogTests(unittest.TestCase):
                 )
                 k += 1
                 time.sleep(0.05)
+            out.close()
 
         thread = threading.Thread(target=fake_vehicle, daemon=True)
         thread.start()
@@ -248,6 +256,82 @@ class FlightLogTests(unittest.TestCase):
 
         cleaned = _finalize_trajectory(t, base, base, base, base, None, None, "xy", (0.0, 0.0), "s")
         self.assertTrue(np.all(np.diff(cleaned.t) > 0))
+
+
+class VectorizationTests(unittest.TestCase):
+    def test_batch_features_match_per_sample(self):
+        rng = np.random.default_rng(11)
+        states = np.column_stack(
+            [rng.uniform(-80, 80, 50), rng.uniform(-80, 80, 50), rng.uniform(-VMAX, VMAX, 50), rng.uniform(-VMAX, VMAX, 50)]
+        )
+        batch = batch_state_features(states, GOAL, BOX, SCALE, VMAX)
+        for i, s in enumerate(states):
+            np.testing.assert_allclose(batch[i], state_features(s, GOAL, BOX, SCALE, VMAX))
+
+    def test_contains_batch_matches_scalar(self):
+        rng = np.random.default_rng(12)
+        points = rng.uniform(-20, 20, size=(200, 2))
+        batch = BOX.contains_batch(points, margin=MARGIN)
+        for i, p in enumerate(points):
+            self.assertEqual(bool(batch[i]), BOX.contains(p, margin=MARGIN))
+
+
+class RealLogHelpersTests(unittest.TestCase):
+    def test_auto_align_centers_flights_on_fence(self):
+        t = np.arange(10) * 0.1
+        pos = np.column_stack([np.linspace(1000.0, 1060.0, 10), np.linspace(-500.0, -460.0, 10)])
+        traj = Trajectory(t=t, pos=pos, vel=np.zeros((10, 2)), acc=np.ones((10, 2)))
+        aligned = align_trajectories([traj], BOX)[0]
+        bbox_center = 0.5 * (aligned.pos.min(axis=0) + aligned.pos.max(axis=0))
+        np.testing.assert_allclose(bbox_center, BOX.center, atol=1e-9)
+        # Translation only: dynamics quantities unchanged.
+        np.testing.assert_allclose(aligned.vel, traj.vel)
+        np.testing.assert_allclose(aligned.acc, traj.acc)
+        np.testing.assert_allclose(aligned.t, traj.t)
+
+    def test_url_logs_download_and_cache(self):
+        import http.server
+        import threading
+
+        with tempfile.TemporaryDirectory() as tmp:
+            served = Path(tmp) / "served"
+            served.mkdir()
+            _simulate_csv_log(served / "flights.csv", episodes=1, steps=50)
+            handler = lambda *a, **kw: http.server.SimpleHTTPRequestHandler(*a, directory=str(served), **kw)
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            url = f"http://127.0.0.1:{server.server_address[1]}/flights.csv"
+            cache = Path(tmp) / "cache"
+            try:
+                first = download_log(url, "csv", cache_dir=cache)
+                self.assertTrue(first.exists())
+                self.assertEqual(len(load_csv_log(first)), 1)
+            finally:
+                server.shutdown()
+            # Second call must hit the cache: the server is already down.
+            second = download_log(url, "csv", cache_dir=cache)
+            self.assertEqual(first, second)
+
+    def test_failed_download_raises_and_leaves_no_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "cache"
+            with self.assertRaises(RuntimeError):
+                download_log("http://127.0.0.1:9/missing.csv", "csv", cache_dir=cache)
+            self.assertEqual(list(cache.glob("*")), [])
+
+    def test_fetch_script_duration_parser(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "fetch_px4_logs", Path(__file__).parents[1] / "scripts/fetch_px4_logs.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(module.parse_duration_s("21s"), 21)
+        self.assertEqual(module.parse_duration_s("3m17s"), 197)
+        self.assertEqual(module.parse_duration_s("11m7s"), 667)
+        self.assertEqual(module.parse_duration_s("1h2m3s"), 3723)
+        self.assertEqual(module.parse_duration_s("garbage"), 0)
 
 
 class ConfigAndPipelineTests(unittest.TestCase):

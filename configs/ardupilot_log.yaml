@@ -16,10 +16,11 @@ environment:
   safety_margin: 1.0
 data:
   source: ardupilot_log
-  logs: ["logs/ardupilot/*.bin", "logs/ardupilot/*.tlog"]
+  logs: ["logs/ardupilot/*.bin", "logs/ardupilot/*.tlog"]  # paths, globs or http(s) URLs
   message: auto           # LOCAL_POSITION_NED for tlogs, XKF1/NKF1 for DataFlash
   frame: auto
-  offset: [0.0, 0.0]
+  auto_align: true        # translate each flight onto the fence geometry automatically
+  offset: [0.0, 0.0]      # manual shift, applied before auto_align
   synthetic_fraction: 0.25
 teacher:
   backend: ardupilot

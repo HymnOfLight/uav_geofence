@@ -17,10 +17,11 @@ environment:
   safety_margin: 1.0
 data:
   source: px4_ulog
-  logs: ["logs/px4/*.ulg"]
+  logs: ["logs/px4/*.ulg"]  # paths, globs or direct http(s) URLs (cached in logs/_downloads/)
   topic: vehicle_local_position
   frame: auto             # NED logs are mapped to world x=east, y=north
-  offset: [0.0, 0.0]      # shift log positions into the experiment frame
+  auto_align: true        # translate each flight onto the fence geometry automatically
+  offset: [0.0, 0.0]      # manual shift, applied before auto_align
   synthetic_fraction: 0.25  # top up with teacher samples for state coverage
 teacher:
   backend: px4

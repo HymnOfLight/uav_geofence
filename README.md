@@ -91,6 +91,24 @@ python scripts/aggregate_results.py --runs runs/sweep --output runs/aggregate --
 
 ### 3.1 真实飞行日志作为训练数据
 
+**最短路径（真实开源日志，两条命令）**——自动从 [logs.px4.io](https://logs.px4.io) 公开数据库抓取真实四旋翼飞行并跑完整流水线：
+
+```bash
+python scripts/fetch_px4_logs.py --count 5 --dest logs/px4
+python -m geofence_qnn.cli all --config configs/px4_public_logs.yaml --output runs/px4_public
+```
+
+抓取脚本按机型（四旋翼）、时长和飞行模式（Position）过滤最近的公开日志，逐个下载并实际解析验证（无位置数据或原地不动的日志自动跳过）。`configs/px4_public_logs.yaml` 中的 `data.auto_align: true` 会把每条航迹平移到围栏几何上（只平移位置，速度、加速度、时间不动），免去逐文件手调 `data.offset`。发表时数据来源引用 logs.px4.io。
+
+`data.logs` 也可直接填 http(s) URL（如 Flight Review 的下载链接），首次运行自动下载并缓存到 `logs/_downloads/`，之后离线复跑：
+
+```yaml
+data:
+  source: px4_ulog
+  logs: ["https://logs.px4.io/download?log=<uuid>&type=0"]
+  auto_align: true
+```
+
 `data.source` 支持四种取值：
 
 | source | 说明 | 依赖 |
@@ -100,20 +118,16 @@ python scripts/aggregate_results.py --runs runs/sweep --output runs/aggregate --
 | `ardupilot_log` | ArduPilot DataFlash `.bin`/`.log`（XKF1/NKF1）或 MAVLink `.tlog`（LOCAL_POSITION_NED） | pymavlink |
 | `csv` | 通用 CSV 轨迹 `t,x,y,vx,vy[,ax,ay][,episode]`（含本包 SITL 录制输出） | 无 |
 
-NED 日志自动映射到实验平面坐标（x=东、y=北），`data.offset` 用于把日志位置平移到实验围栏几何中；动作优先取日志加速度，否则对重采样速度差分，再按 `amax` 截断归一化。`data.synthetic_fraction` 可按比例混入教师样本补足状态空间覆盖。示例配置：`configs/px4_ulog.yaml`、`configs/ardupilot_log.yaml`。
+NED 日志自动映射到实验平面坐标（x=东、y=北）；对齐用 `data.auto_align: true`（推荐）或手动 `data.offset`；动作优先取日志加速度，否则对重采样速度差分，再按 `amax` 截断归一化。真实航迹不会绕我们的虚拟围栏飞行，所以 `data.synthetic_fraction`（`px4_public_logs.yaml` 默认 0.5）混入教师样本提供避障行为与边界带覆盖。其他模板：`configs/px4_ulog.yaml`、`configs/ardupilot_log.yaml`（自备日志文件）。
 
-```bash
-python -m geofence_qnn.cli all --config configs/px4_ulog.yaml --output runs/px4_logs
-```
-
-没有真实日志时，可用行为教师生成演示 CSV 日志走通同一条日志摄取链路（加载、重采样、动作提取、围栏过滤与真实日志完全一致）：
+完全离线时，可用行为教师生成演示 CSV 日志走通同一条摄取链路：
 
 ```bash
 python scripts/make_demo_logs.py --config configs/demo_csv.yaml --backend px4 --output logs/demo
 python -m geofence_qnn.cli all --config configs/demo_csv.yaml --output runs/demo_csv
 ```
 
-演示数据仍是合成数据（行为级模型 rollout），论文中不得写成真机或固件结果；固件级数据请用 3.3 的 SITL 录制，真机数据可从 [logs.px4.io](https://logs.px4.io) 下载公开 `.ulg`（注意用 `data.offset` 平移到围栏几何中）。
+演示数据仍是合成数据（行为级模型 rollout），论文中不得写成真机或固件结果。
 
 ### 3.2 PX4 / ArduPilot 围栏行为教师与仿真基线
 
