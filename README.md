@@ -154,7 +154,14 @@ python -m geofence_qnn.cli sitl-record --config configs/smoke.yaml --output runs
   --url udp:127.0.0.1:14550 --episodes 5 --duration 120 --rate 20
 ```
 
-录制器不改飞行模式、不解锁；任务、围栏上传与模式切换由操作者（QGroundControl / MAVProxy）负责。`--command-goal` 可选地向配置目标点流式发送位置设定值（需 OFFBOARD/GUIDED 模式）。SITL 的逐步安装、围栏参数（`GF_ACTION`/`GF_PREDICT`、`FENCE_*`/`AVOID_*`）配置与常见问题排查见 [EXPERIMENT_STEPS.md](EXPERIMENT_STEPS.md) 步骤 14.5。
+无显示环境（AutoDL 等）可用 `sitl-fly` 全自动飞行，不需要 QGroundControl：通过纯 MAVLink 写参数（自动适配稳定版 `WPNAV_*` 与 master `WP_*` 两代参数）、上传排除围栏与穿越任务、解锁起飞并执行 AUTO 任务（ArduCopter；已在真实 ArduCopter SITL 上端到端验证）：
+
+```bash
+python -m geofence_qnn.cli sitl-fly --config configs/main.yaml --output runs/sitl \
+  --url udp:127.0.0.1:14550
+```
+
+录制器不改飞行模式、不解锁；有 GCS 时任务、围栏上传与模式切换也可由操作者（QGroundControl / MAVProxy）负责。`--command-goal` 可选地向配置目标点流式发送位置设定值（需 OFFBOARD/GUIDED 模式）；`--global-home` 让录制数据与生成的围栏几何精确对齐。SITL 的逐步安装、围栏参数（`GF_ACTION`/`GF_PREDICT`、`FENCE_*`/`AVOID_*`/`OA_TYPE`）配置与常见问题排查见 [EXPERIMENT_STEPS.md](EXPERIMENT_STEPS.md) 步骤 14.5。
 
 ## 4. 研究边界
 

@@ -34,6 +34,9 @@ def _require_pymavlink():
     return mavutil
 
 
+MAVLINK_MSG_ID_GLOBAL_POSITION_INT = 33
+
+
 def record_sitl_trajectories(
     url: str,
     output_csv: str | Path,
@@ -43,24 +46,39 @@ def record_sitl_trajectories(
     goal: tuple[float, float] | None = None,
     offset: tuple[float, float] = (0.0, 0.0),
     heartbeat_timeout_s: float = 30.0,
+    global_home: tuple[float, float] | None = None,
 ) -> dict:
     """Record ``episodes`` segments of ``duration_s`` seconds each into CSV.
 
-    ``goal`` (world x, y) enables streaming of ``SET_POSITION_TARGET_LOCAL_NED``
-    setpoints toward that point at 2 Hz; ``offset`` shifts the recorded
-    positions into the experiment frame (same convention as ``data.offset``).
-    Returns a summary dict (episodes, samples, duration, output path).
+    Two position sources:
+
+    - ``global_home=(lat, lon)`` (recommended with generated fences): record
+      ``GLOBAL_POSITION_INT`` and convert to world x/y around that anchor.
+      This is exact regardless of where the EKF origin ended up, so the data
+      lines up with fences/missions generated from the same home.
+    - ``global_home=None``: record ``LOCAL_POSITION_NED`` relative to the EKF
+      origin (usually the spawn point) and apply ``offset``.
+
+    ``goal`` (world x, y) enables streaming of position setpoints toward that
+    point at 2 Hz (PX4 OFFBOARD / ArduPilot GUIDED only). Returns a summary
+    dict (episodes, samples, duration, output path).
     """
+    from .geo import latlon_to_xy
+
     mavutil = _require_pymavlink()
     conn = mavutil.mavlink_connection(url)
     if conn.wait_heartbeat(timeout=heartbeat_timeout_s) is None:
         raise TimeoutError(f"no MAVLink heartbeat from {url} within {heartbeat_timeout_s}s")
+    message_id = (
+        MAVLINK_MSG_ID_GLOBAL_POSITION_INT if global_home is not None else MAVLINK_MSG_ID_LOCAL_POSITION_NED
+    )
+    message_name = "GLOBAL_POSITION_INT" if global_home is not None else "LOCAL_POSITION_NED"
     conn.mav.command_long_send(
         conn.target_system,
         conn.target_component,
         mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
         0,
-        MAVLINK_MSG_ID_LOCAL_POSITION_NED,
+        message_id,
         int(1e6 / rate_hz),
         0, 0, 0, 0, 0,
     )
@@ -80,20 +98,17 @@ def record_sitl_trajectories(
                 if goal is not None and now - last_setpoint > 0.5:
                     _send_goal_setpoint(mavutil, conn, goal, offset)
                     last_setpoint = now
-                msg = conn.recv_match(type="LOCAL_POSITION_NED", blocking=True, timeout=1.0)
+                msg = conn.recv_match(type=message_name, blocking=True, timeout=1.0)
                 if msg is None:
                     continue
-                # NED -> world: x = east + offset_x, y = north + offset_y.
-                writer.writerow(
-                    [
-                        episode,
-                        msg.time_boot_ms / 1e3,
-                        msg.y + offset[0],
-                        msg.x + offset[1],
-                        msg.vy,
-                        msg.vx,
-                    ]
-                )
+                if global_home is not None:
+                    x, y = latlon_to_xy(msg.lat / 1e7, msg.lon / 1e7, *global_home)
+                    # GLOBAL_POSITION_INT velocities are NED cm/s.
+                    row = [x + offset[0], y + offset[1], msg.vy / 100.0, msg.vx / 100.0]
+                else:
+                    # NED -> world: x = east + offset_x, y = north + offset_y.
+                    row = [msg.y + offset[0], msg.x + offset[1], msg.vy, msg.vx]
+                writer.writerow([episode, msg.time_boot_ms / 1e3, *row])
                 samples += 1
     return {
         "url": url,

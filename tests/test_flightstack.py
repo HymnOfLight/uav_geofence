@@ -336,6 +336,31 @@ class RealLogHelpersTests(unittest.TestCase):
         self.assertEqual(module.parse_duration_s("1h2m3s"), 3723)
         self.assertEqual(module.parse_duration_s("garbage"), 0)
 
+    def test_geo_roundtrip(self):
+        from geofence_qnn.flightstack.geo import DEFAULT_HOME, latlon_to_xy, xy_to_latlon
+
+        for x, y in [(0.0, 0.0), (-35.0, 12.5), (70.0, -16.0)]:
+            lat, lon = xy_to_latlon(x, y, *DEFAULT_HOME)
+            bx, by = latlon_to_xy(lat, lon, *DEFAULT_HOME)
+            self.assertAlmostEqual(bx, x, places=6)
+            self.assertAlmostEqual(by, y, places=6)
+
+    def test_ardupilot_param_candidates(self):
+        from geofence_qnn.flightstack.mission import ardupilot_param_candidates
+
+        groups = {tuple(n for n, _ in group): dict(group) for group in ardupilot_param_candidates(8.0, 4.0, 1.0)}
+        # Both firmware generations covered, with the unit conversion applied.
+        speed = groups[("WPNAV_SPEED", "WP_SPD")]
+        self.assertEqual(speed["WPNAV_SPEED"], 800.0)  # cm/s on stable
+        self.assertEqual(speed["WP_SPD"], 8.0)  # m/s on master
+        accel = groups[("WPNAV_ACCEL", "WP_ACC")]
+        self.assertEqual(accel["WPNAV_ACCEL"], 400.0)
+        self.assertEqual(accel["WP_ACC"], 4.0)
+        flat = {name: value for group in groups.values() for name, value in group.items()}
+        self.assertEqual(flat["FENCE_MARGIN"], 1.0)
+        self.assertEqual(flat["FENCE_ENABLE"], 1)
+        self.assertEqual(flat["OA_TYPE"], 1)
+
     def test_sitl_setup_generator_roundtrip(self):
         import json
         import math
