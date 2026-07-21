@@ -233,6 +233,24 @@ def run_all(config_path: str, output: str):
     print(json.dumps(summaries, ensure_ascii=False, indent=2))
 
 
+def sitl_fly_stage(cfg, out: Path, args):
+    from .flightstack.mission import fly_mission
+
+    e = cfg.environment
+    summary = fly_mission(
+        args.url,
+        e.forbidden_box,
+        e.safety_margin,
+        tuple(e.goal),
+        e.vmax,
+        e.amax,
+        (args.home_lat, args.home_lon),
+        altitude=args.altitude,
+    )
+    write_json(out / "sitl_fly_summary.json", summary)
+    return summary
+
+
 def sitl_record_stage(cfg, out: Path, args):
     from .flightstack.sitl import record_sitl_trajectories
 
@@ -244,6 +262,7 @@ def sitl_record_stage(cfg, out: Path, args):
         rate_hz=args.rate,
         goal=tuple(cfg.environment.goal) if args.command_goal else None,
         offset=cfg.data.offset,
+        global_home=(args.home_lat, args.home_lon) if args.global_home else None,
     )
     write_json(out / "sitl_record_summary.json", summary)
     return summary
@@ -251,21 +270,34 @@ def sitl_record_stage(cfg, out: Path, args):
 
 def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description="UAV geofence INT8 QNN experiments")
-    parser.add_argument("command", choices=["all", "train", "e0", "e1", "e2", "mc", "sitl-record"])
+    parser.add_argument("command", choices=["all", "train", "e0", "e1", "e2", "mc", "sitl-record", "sitl-fly"])
     parser.add_argument("--config", default="configs/smoke.yaml")
     parser.add_argument("--output", default="runs/smoke")
-    sitl = parser.add_argument_group("sitl-record", "record flight data from a live PX4/ArduPilot SITL")
+    sitl = parser.add_argument_group("sitl", "interact with a live PX4/ArduPilot SITL over MAVLink")
     sitl.add_argument("--url", default="udp:127.0.0.1:14550", help="MAVLink connection URL")
     sitl.add_argument("--episodes", type=int, default=1)
-    sitl.add_argument("--duration", type=float, default=60.0, help="seconds per episode")
+    sitl.add_argument("--duration", type=float, default=60.0, help="seconds per episode (sitl-record)")
     sitl.add_argument("--rate", type=float, default=20.0, help="LOCAL_POSITION_NED stream rate (Hz)")
     sitl.add_argument("--command-goal", action="store_true", help="stream position setpoints toward the configured goal")
+    from .flightstack.geo import DEFAULT_HOME
+
+    sitl.add_argument("--home-lat", type=float, default=DEFAULT_HOME[0], help="world-frame anchor latitude")
+    sitl.add_argument("--home-lon", type=float, default=DEFAULT_HOME[1], help="world-frame anchor longitude")
+    sitl.add_argument("--altitude", type=float, default=10.0, help="mission altitude in m (sitl-fly)")
+    sitl.add_argument(
+        "--global-home",
+        action="store_true",
+        help="sitl-record: record GLOBAL_POSITION_INT around --home-lat/lon instead of LOCAL_POSITION_NED",
+    )
     args = parser.parse_args(argv)
     if args.command == "all":
         return run_all(args.config, args.output)
     cfg, out = setup(args.config, args.output)
     if args.command == "sitl-record":
         print(sitl_record_stage(cfg, out, args))
+        return
+    if args.command == "sitl-fly":
+        print(sitl_fly_stage(cfg, out, args))
         return
     if args.command == "train":
         train_stage(cfg, out)

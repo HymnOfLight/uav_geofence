@@ -31,34 +31,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from geofence_qnn.config import load_config  # noqa: E402
-
-# PX4 SITL default home (Zurich Irchel).
-DEFAULT_HOME = (47.397742, 8.545594)
-EARTH_M_PER_DEG = 111320.0
-
-
-def xy_to_latlon(x_east: float, y_north: float, home_lat: float, home_lon: float) -> tuple[float, float]:
-    lat = home_lat + y_north / EARTH_M_PER_DEG
-    lon = home_lon + x_east / (EARTH_M_PER_DEG * math.cos(math.radians(home_lat)))
-    return lat, lon
-
-
-def box_polygon(box: tuple[float, float, float, float], pad: float, home: tuple[float, float]) -> list[list[float]]:
-    xmin, xmax, ymin, ymax = box
-    corners_xy = [
-        (xmin - pad, ymin - pad),
-        (xmax + pad, ymin - pad),
-        (xmax + pad, ymax + pad),
-        (xmin - pad, ymax + pad),
-    ]
-    return [list(xy_to_latlon(x, y, *home)) for x, y in corners_xy]
+from geofence_qnn.flightstack.geo import (  # noqa: E402
+    DEFAULT_HOME,
+    EARTH_M_PER_DEG,
+    box_polygon_latlon as box_polygon,
+    xy_to_latlon,
+)
 
 
 def _waypoint(seq: int, command: int, lat: float, lon: float, alt: float) -> dict:
@@ -158,6 +142,8 @@ def main() -> None:
 
     ap_params = [
         "# load in MAVProxy with: param load fences/ardupilot_params.parm",
+        "# (one of the WPNAV_*/WP_* pairs will warn as unknown depending on the",
+        "#  firmware generation; that is expected and harmless)",
         "FENCE_ENABLE     1",
         "FENCE_TYPE       4          # polygon fences",
         "FENCE_ACTION     1          # RTL/Land on breach (avoidance stops before)",
@@ -165,18 +151,32 @@ def main() -> None:
         "AVOID_ENABLE     7          # use fence + proximity avoidance",
         f"AVOID_ACCEL_MAX  {e.amax:g}",
         "AVOID_BACKUP_SPD 0.75",
-        f"WPNAV_SPEED      {e.vmax * 100:g}      # cm/s, match experiment vmax",
-        f"WPNAV_ACCEL      {e.amax * 100:g}      # cm/s^2, match experiment amax",
+        "OA_TYPE          1          # BendyRuler: plan around the fence in AUTO (needs reboot)",
+        f"WPNAV_SPEED      {e.vmax * 100:g}      # cm/s, stable releases (<= 4.6)",
+        f"WPNAV_ACCEL      {e.amax * 100:g}      # cm/s^2, stable releases (<= 4.6)",
+        f"WP_SPD           {e.vmax:g}          # m/s, current master (4.8-dev+)",
+        f"WP_ACC           {e.amax:g}          # m/s^2, current master (4.8-dev+)",
     ]
     (out / "ardupilot_params.parm").write_text("\n".join(ap_params) + "\n", encoding="utf-8")
 
     print(f"wrote SITL setup files to {out}/:")
     for name in ["px4_geofence.plan", "px4_params.txt", "ardupilot_geofence.plan", "ardupilot_params.parm"]:
         print(f"  {out / name}")
+
+    # The vehicle must spawn OUTSIDE the fence (a spawn inside fails pre-arm
+    # with "Vehicle breaching Polygon fence"); the mission start is a safe spot.
+    spawn_lat, spawn_lon = xy_to_latlon(*start_xy, *home)
+    print("\nspawn the SITL outside the fence, at the mission start:")
+    print(f"  PX4:       PX4_HOME_LAT={spawn_lat:.7f} PX4_HOME_LON={spawn_lon:.7f} make px4_sitl jmavsim")
+    print(f"  ArduPilot: sim_vehicle.py -v ArduCopter --custom-location={spawn_lat:.7f},{spawn_lon:.7f},488,0")
+    print(f"             (or arducopter binary: --home {spawn_lat:.7f},{spawn_lon:.7f},488,0)")
     print("\nnext steps (details in EXPERIMENT_STEPS.md section 14.5):")
-    print("  PX4:       load px4_geofence.plan in QGC, paste px4_params.txt into pxh>, fly the mission")
-    print("  ArduPilot: param load, fence upload via QGC plan, fly the mission in AUTO")
-    print("  record:    python -m geofence_qnn.cli sitl-record --config", args.config, "--output runs/sitl")
+    print("  PX4:           load px4_geofence.plan in QGC, paste px4_params.txt into pxh>, fly the mission")
+    print("  ArduPilot GUI: param load, fence upload via QGC plan, fly the mission in AUTO")
+    print("  ArduPilot headless (no QGC):")
+    print("    python -m geofence_qnn.cli sitl-fly --config", args.config, "--output runs/sitl --url tcp:127.0.0.1:5760")
+    print("  record (parallel):")
+    print("    python -m geofence_qnn.cli sitl-record --config", args.config, "--output runs/sitl --url tcp:127.0.0.1:5762 --global-home")
 
 
 if __name__ == "__main__":

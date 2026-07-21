@@ -491,28 +491,36 @@ commander mode auto:mission
 #### 14.5.3 ArduPilot SITL 配置步骤
 
 ```bash
-# 安装（一次性）
+# 安装（一次性；容器只有 root 时官方脚本会拒绝运行，见 14.5.5 的绕过方法）
 git clone https://github.com/ArduPilot/ardupilot.git --recursive
 cd ardupilot
 Tools/environment_install/install-prereqs-ubuntu.sh -y && . ~/.profile
 
-# 启动（首次加 -w 初始化参数；无显示环境去掉 --map）
-Tools/autotest/sim_vehicle.py -v ArduCopter --console
+# 启动。重要：出生点必须在围栏外（默认出生点在围栏中心会导致
+# "PreArm: Vehicle breaching Polygon fence"），用 make_sitl_setup.py
+# 打印的任务起点坐标：
+Tools/autotest/sim_vehicle.py -v ArduCopter --console \
+  --custom-location=47.3977420,8.5451295,488,0
 # 默认已输出 MAVLink 到 udp:14550（QGC）和 udp:14551
-
-# 在 MAVProxy 提示符里：
-param load fences/ardupilot_params.parm
-# 关键参数含义：
-#   FENCE_ENABLE=1, FENCE_TYPE=4     多边形围栏
-#   FENCE_MARGIN=1                   与实验 safety_margin 对齐
-#   AVOID_ENABLE=7                   低速下主动避围栏（产生滑移数据）
-#   WPNAV_SPEED=800, WPNAV_ACCEL=400 cm 单位，与实验 vmax/amax 对齐
 ```
 
-围栏与任务上传同样用 QGC 打开 `fences/ardupilot_geofence.plan` 并 Upload（QGC 会把排除多边形写成 ArduPilot 围栏项）。起飞执行：
+**方式 A：无头全自动（无显示环境，AutoDL 等推荐）**——不需要 QGC 和 MAVProxy 交互，一条命令完成设参、围栏与任务上传、解锁、起飞、执行任务：
 
 ```bash
-# MAVProxy 提示符
+python -m geofence_qnn.cli sitl-fly --config configs/main.yaml --output runs/sitl \
+  --url udp:127.0.0.1:14550
+# 不经 sim_vehicle/MAVProxy 直接跑 arducopter 二进制时用 --url tcp:127.0.0.1:5760
+```
+
+它通过纯 MAVLink 完成：写入围栏/避障/WPNAV 参数（自动适配固件代数：稳定版的 `WPNAV_SPEED`（cm/s）与 master 4.8-dev+ 改名后的 `WP_SPD`（m/s）都能识别）、设置 `OA_TYPE=1`（BendyRuler 路径规划，AUTO 模式下绕排除区飞行而不是触发围栏动作）并重启使其生效、按任务协议上传排除多边形围栏与穿越任务、等 GPS/EKF 就绪、GUIDED 解锁起飞、切 AUTO 执行，最后报告是否到达终点及围栏事件数。
+
+**方式 B：MAVProxy 手动**（有交互终端时）：
+
+```bash
+# MAVProxy 提示符里：
+param load fences/ardupilot_params.parm   # WPNAV_*/WP_* 两代参数各有一对，不认识的会告警，属预期
+reboot                                    # OA_TYPE 需要重启生效
+# 围栏与任务用 QGC 打开 fences/ardupilot_geofence.plan 并 Upload
 mode GUIDED
 arm throttle
 takeoff 10
@@ -521,20 +529,38 @@ mode AUTO          # 执行已上传的任务；或留在 GUIDED 手动发目标
 
 #### 14.5.4 录制与回收
 
-SITL 起飞后，在仓库目录另开终端录制：
+SITL 起飞前后，在仓库目录另开终端录制。与生成的围栏/任务配套时加 `--global-home`：录制 `GLOBAL_POSITION_INT` 并绕同一 home 点转成世界系，与 EKF 原点落在哪无关，数据与实验几何精确对齐：
 
 ```bash
 python -m geofence_qnn.cli sitl-record --config configs/main.yaml --output runs/sitl \
-  --url udp:127.0.0.1:14550 --episodes 10 --duration 120 --rate 20
+  --url udp:127.0.0.1:14551 --global-home --episodes 10 --duration 120 --rate 20
+# 直连 arducopter 二进制时录制端口用 --url tcp:127.0.0.1:5762（serial1），
+# 5760 已被 sitl-fly 占用（TCP 串口是一对一的）
 ```
 
-录制器只读 `LOCAL_POSITION_NED` 并按 x=东、y=北 转成世界系 CSV，不解锁、不切模式；`--command-goal` 会以 2 Hz 向配置目标点发位置设定值，仅在 PX4 OFFBOARD / ArduPilot GUIDED 模式下生效（任务飞行时不需要）。随后把 `runs/sitl/sitl_trajectories.csv` 填入 `data.logs`、设 `data.source: csv`，回到步骤 14.3。
+不加 `--global-home` 则回退为录 `LOCAL_POSITION_NED`（相对 EKF 原点，即出生点），需要 `data.offset` 或 `data.auto_align` 对齐。录制器不解锁、不切模式；`--command-goal` 会以 2 Hz 向配置目标点发位置设定值，仅在 PX4 OFFBOARD / ArduPilot GUIDED 模式下生效（任务飞行时不需要）。随后把 `runs/sitl/sitl_trajectories.csv` 填入 `data.logs`、设 `data.source: csv`，回到步骤 14.3。
 
 另一条等价路径是直接用 SITL 自动落盘的标准日志：PX4 在 `PX4-Autopilot/build/px4_sitl_default/rootfs/log/<日期>/*.ulg`（用 `data.source: px4_ulog` 读），ArduPilot 在 sim_vehicle 运行目录的 `logs/*.BIN`（用 `data.source: ardupilot_log` 读）；这条路径还能拿到日志里的加速度通道。
 
 #### 14.5.5 常见问题
 
-- **`sitl-record` 报 no MAVLink heartbeat**：端口被 QGC 独占或写错。QGC 和录制器可同时收 14550（UDP 广播），但若不行，PX4 可再开一路输出（pxh：`mavlink start -u 14552 -o 14552`，然后 `--url udp:127.0.0.1:14552`）；ArduPilot 在 sim_vehicle.py 加 `--out 127.0.0.1:14552`；
+- **容器只有 root（AutoDL 等租用环境）**：ArduPilot 的 `install-prereqs-ubuntu.sh` 硬性拒绝 root（`Please do not run this script as root`），但该脚本只是依赖安装的封装，编译（waf）与运行（sim_vehicle.py）不检查 root。直接手动装依赖即可：
+
+```bash
+apt-get update
+apt-get install -y git g++ ccache pkg-config libtool libxml2-dev libxslt1-dev \
+    python3-dev python-is-python3
+# empy 必须锁 3.3.4：empy 4.x 会使 ArduPilot 代码生成报错
+python -m pip install empy==3.3.4 pexpect future pymavlink MAVProxy dronecan intelhex
+cd ardupilot && git submodule update --init --recursive
+Tools/autotest/sim_vehicle.py -v ArduCopter -w --console   # 自动完成 waf 编译
+```
+
+  若坚持用官方脚本，则新建非 root 用户（`apt-get install -y sudo && useradd -m -s /bin/bash uav && echo 'uav ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers`），并把 ardupilot 仓库移出 `/root`（其他用户无法进入该目录）后 `su - uav` 执行。PX4 的 `Tools/setup/ubuntu.sh` 不拒绝 root，但内部调用 `sudo`，容器里通常要先 `apt-get install -y sudo`；
+- **`sitl-record` 报 no MAVLink heartbeat**：端口被 QGC 独占或写错。QGC 和录制器可同时收 14550（UDP 广播），但若不行，PX4 可再开一路输出（pxh：`mavlink start -u 14552 -o 14552`，然后 `--url udp:127.0.0.1:14552`）；ArduPilot 在 sim_vehicle.py 加 `--out 127.0.0.1:14552`。注意 TCP 串口（5760/5762/5763）是一对一的：`sitl-fly` 用 5760 时录制器要用 5762；
+- **解锁失败报 `PreArm: Vehicle breaching Polygon fence`**：出生点在围栏（或其裕度）内。SITL 启动时把出生点放在围栏外，用 `make_sitl_setup.py` 打印的任务起点（sim_vehicle 用 `--custom-location=<lat>,<lon>,488,0`，PX4 用 `PX4_HOME_LAT/LON` 环境变量）；
+- **`param set WPNAV_SPEED` 无响应 / 参数不存在**：ArduPilot master（4.8-dev+）把 `WPNAV_SPEED`/`WPNAV_ACCEL` 改名为 `WP_SPD`/`WP_ACC` 并改用 SI 单位（m/s、m/s²）。`sitl-fly` 自动识别两代参数；手动设参时按固件版本选一组；
+- **AUTO 模式下一到围栏就 RTL/降落而不是绕行**：`FENCE_ACTION` 触发了。想要"绕排除区飞行"的数据需要 `OA_TYPE=1`（BendyRuler），且该参数改完必须重启飞控才生效；
 - **录出的 CSV 位置全为 0**：飞控还没起飞或 EKF 未就绪，先确认 QGC 显示 Ready to fly 再录；
 - **飞行器直接穿过了围栏**：PX4 检查 `GF_ACTION≥2` 且围栏已 Upload（QGC Plan 视图能看到红色多边形）；ArduPilot 检查 `FENCE_ENABLE=1`、`FENCE_TYPE` 含 4，且解锁前围栏已上传；
 - **数据里几乎没有边界带样本**：任务航点没有真正逼近围栏，用生成的 plan 里的穿越任务，或手动多飞几次"朝围栏冲再被挡下"的轨迹；`data.synthetic_fraction` 可补覆盖但不能替代真实避障行为；
